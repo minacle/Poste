@@ -51,3 +51,59 @@ public final class VoidPoste: Poste {
         }
     }
 }
+
+public final class ThrowingOptionalPoste<T>: Poste {
+
+    internal let queue = newPosteQueue
+
+    internal var result: T?
+    internal var error: Error?
+
+    internal required init(closure: @escaping () throws -> T?) {
+        self.queue.async {
+            do {
+                self.result = try closure()
+            }
+            catch {
+                self.error = error
+            }
+        }
+    }
+}
+
+public final class ThrowingRequiredPoste<T>: Poste {
+
+    internal let queue = newPosteQueue
+
+    internal var result: T!
+    internal var error: Error?
+
+    internal required init(closure: @escaping () throws -> T) {
+        self.queue.async {
+            do {
+                self.result = try closure()
+            }
+            catch {
+                self.error = error
+            }
+        }
+    }
+}
+
+public final class ThrowingVoidPoste: Poste {
+
+    internal let queue = newPosteQueue
+
+    internal var error: Error?
+
+    internal required init(closure: @escaping () throws -> Void) {
+        self.queue.async {
+            do {
+                try closure()
+            }
+            catch {
+                self.error = error
+            }
+        }
+    }
+}
