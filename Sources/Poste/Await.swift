@@ -15,5 +15,6 @@ public func await<T>(_ poste: RequiredPoste<T>) -> T {
 }
 
 public func await(_ poste: VoidPoste) {
-    return poste.queue.sync {}
+    poste.queue.sync {}
+    return
 }

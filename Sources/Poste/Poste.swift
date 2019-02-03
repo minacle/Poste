@@ -5,16 +5,19 @@ internal let globalQueue =
         label: "moe.minacle.lib.poste",
         attributes: .concurrent)
 
+private var newPosteQueue: DispatchQueue {
+    return DispatchQueue(
+        label: "moe.minacle.lib.poste.\(randomNumberGenerator.next())",
+        target: globalQueue)
+}
+
 private var randomNumberGenerator = SystemRandomNumberGenerator()
 
 public protocol Poste {}
 
 public final class OptionalPoste<T>: Poste {
 
-    internal let queue =
-        DispatchQueue(
-            label: "moe.minacle.lib.poste.\(randomNumberGenerator.next())?",
-            target: globalQueue)
+    internal let queue = newPosteQueue
 
     internal var result: T?
 
@@ -27,10 +30,7 @@ public final class OptionalPoste<T>: Poste {
 
 public final class RequiredPoste<T>: Poste {
 
-    internal let queue =
-        DispatchQueue(
-            label: "moe.minacle.lib.poste.\(randomNumberGenerator.next())!",
-            target: globalQueue)
+    internal let queue = newPosteQueue
 
     internal var result: T!
 
@@ -43,10 +43,7 @@ public final class RequiredPoste<T>: Poste {
 
 public final class VoidPoste: Poste {
 
-    internal let queue =
-        DispatchQueue(
-            label: "moe.minacle.lib.poste.\(randomNumberGenerator.next())",
-            target: globalQueue)
+    internal let queue = newPosteQueue
 
     internal required init(closure: @escaping () -> Void) {
         self.queue.async {
