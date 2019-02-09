@@ -81,10 +81,30 @@ final class PosteTests: XCTestCase {
         XCTAssertEqual(number, count)
     }
 
+    func testThenElse() {
+        let numbers: [TimeInterval] = [0, 1, 2, 3, 2, 1, 0, 3]
+        var results = [Bool?](repeating: nil, count: numbers.endIndex)
+        let count = numbers.endIndex
+        for index in 0 ..< count {
+            let poste = async(timeout: .milliseconds(1500)) {
+                Thread.sleep(forTimeInterval: numbers[index])
+            }
+            poste.then(async(.lazy) {
+                results[index] = true
+            })
+            poste.else(async(.lazy) {
+                results[index] = false
+            })
+        }
+        Thread.sleep(forTimeInterval: numbers.max()! * 2)
+        XCTAssertEqual(results, [true, true, false, false, false, true, true, false] as [Bool?])
+    }
+
     static var allTests = [
         ("testRequired", testRequired),
         ("testRequiredAsync", testRequiredAsync),
         ("testOptional", testOptional),
         ("testVoid", testVoid),
+        ("testThenElse", testThenElse),
     ]
 }
