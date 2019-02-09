@@ -1,0 +1,242 @@
+import Dispatch
+
+internal let globalQueue =
+    DispatchQueue(
+        label: "moe.minacle.lib.poste",
+        attributes: .concurrent)
+%{
+allposte = [
+    ("OptionalPoste", "?", "?"),
+    ("RequiredPoste", "!", ""),
+    ("VoidPoste", "Void", "Void"),
+]
+generictype = "T"
+generictype2 = "U"
+}%
+% for lazy in ["", "Lazy"]:
+    % for throwing in ["", "Throwing"]:
+        %{
+        throws = " throws " if throwing else " "
+        }%
+        % for poste in allposte:
+            %{
+            classname = lazy + throwing + poste[0]
+            if poste[1] == "Void":
+                classdef = classname
+                valuetype = poste[2]
+                argtype = ""
+            else:
+                classdef = classname + "<%s>" % generictype
+                valuetype = generictype + poste[2]
+                argtype = valuetype
+            }%
+            % if not lazy:
+
+public class ${classdef} {
+
+    internal let group = DispatchGroup()
+    internal let qos: DispatchQoS
+                % if poste[1] != "Void" or throwing:
+
+                % end
+                % if poste[1] != "Void":
+    internal private(set) var result: ${generictype + poste[1]}
+                % end
+                % if throwing:
+    internal private(set) var error: Error?
+                % end
+
+    private var mainWorkItem: DispatchWorkItem!
+    private var timeoutWorkItem: DispatchWorkItem!
+
+    private var done = false
+    private var cancelled = false
+                % if throwing:
+    private var thrown = false
+                % end
+
+    internal private(set) var isFired = false
+
+    internal required init(closure: @escaping ()${throws}-> ${valuetype}, qos: DispatchQoS, timeout: DispatchTimeInterval) {
+        self.group.enter()
+        self.qos = qos
+        self.mainWorkItem = DispatchWorkItem(qos: self.qos) {
+                % if throwing:
+            do {
+                    % if valuetype == "Void":
+                try closure()
+                    % else:
+                self.result = try closure()
+                    % end
+            }
+            catch {
+                self.error = error
+            }
+                % else:
+                    % if valuetype == "Void":
+            closure()
+                    % else:
+            self.result = closure()
+                    % end
+                % end
+        }
+        self.timeoutWorkItem = DispatchWorkItem(qos: self.qos) {
+            if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
+                switch self.mainWorkItem.wait(timeout: time) {
+                case .success:
+                % if throwing:
+                    if self.error == nil {
+                        self.done = true
+                    }
+                    else {
+                        self.thrown = true
+                    }
+                % else:
+                    self.done = true
+                % end
+                case .timedOut:
+                    self.mainWorkItem.cancel()
+                % if throwing:
+                    if self.error == nil {
+                        self.cancelled = true
+                    }
+                    else {
+                        self.thrown = true
+                    }
+                % else:
+                    self.cancelled = true
+                % end
+                }
+            }
+            else {
+                self.mainWorkItem.wait()
+                % if throwing:
+                if self.error == nil {
+                    self.done = true
+                }
+                else {
+                    self.thrown = true
+                }
+                % else:
+                self.done = true
+                % end
+            }
+        }
+        self.timeoutWorkItem.notify(qos: self.qos, queue: globalQueue) {
+            self.group.leave()
+        }
+        self.fire()
+    }
+
+    internal func fire() {
+        guard !self.isFired else {
+            return
+        }
+        self.isFired = true
+        globalQueue.async(group: self.group, execute: self.mainWorkItem)
+        globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
+    }
+
+                % if poste[1] == "Void":
+    @discardableResult
+                % end
+    public func done(_ closure: @escaping (${argtype}) -> Void) -> ${classdef} {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+                % if argtype:
+            closure(self.result)
+                % else:
+            closure()
+                % end
+        }
+        return self
+    }
+
+                % if poste[1] == "Void":
+    @discardableResult
+                % end
+    public func cancelled(_ closure: @escaping () -> Void) -> ${classdef} {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.cancelled else {
+                return
+            }
+            closure()
+        }
+        return self
+    }
+                % if throwing:
+
+                    % if poste[1] == "Void":
+    @discardableResult
+                    % end
+    public func thrown(_ closure: @escaping (Error) -> Void) -> ${classdef} {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.thrown else {
+                return
+            }
+            closure(self.error!)
+        }
+        return self
+    }
+                % end
+                % for throwing2 in ["", "Throwing"]:
+                    % for poste2 in allposte:
+                        %{
+                        classname2 = throwing2 + poste2[0]
+                        genericdef2 = "" if poste2[1] == "Void" else \
+                                      "<%s>" % generictype2
+                        classdef2 = classname2 + genericdef2
+                        }%
+
+                        % if poste2[1] == "Void":
+    @discardableResult
+                        % end
+    public func then${genericdef2}(_ lazy: Lazy${classdef2}) -> ${classdef2} {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+                        % if poste2[1] == "Void":
+    @discardableResult
+                        % end
+    public func `else`${genericdef2}(_ lazy: Lazy${classdef2}) -> ${classdef2} {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+                    % end
+                % end  
+}
+            % else:
+
+public class ${classdef}: ${classdef[len(lazy):]} {
+
+    private var shouldFire = false
+
+    internal override func fire() {
+        guard self.shouldFire else {
+            return self.shouldFire = true
+        }
+        super.fire()
+    }
+}
+            % end
+        % end
+    % end
+% end

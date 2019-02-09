@@ -1,57 +1,88 @@
-public func await<T>(_ poste: OptionalPoste<T>) -> T? {
-    var result: T?
-    poste.queue.sync {
-        result = poste.result
+import Dispatch
+
+public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: OptionalPoste<T>) -> T? {
+    if !poste.isFired {
+        poste.fire()
     }
-    return result
+    if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
+        _ = poste.group.wait(timeout: time)
+    }
+    else {
+        poste.group.wait()
+    }
+    return poste.result
 }
 
-public func await<T>(_ poste: RequiredPoste<T>) -> T {
-    var result: T!
-    poste.queue.sync {
-        result = poste.result
+public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: RequiredPoste<T>) -> T {
+    if !poste.isFired {
+        poste.fire()
     }
-    return result
+    if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
+        _ = poste.group.wait(timeout: time)
+    }
+    else {
+        poste.group.wait()
+    }
+    return poste.result
 }
 
-public func await(_ poste: VoidPoste) {
-    poste.queue.sync {}
+public func await(timeout: DispatchTimeInterval = .never, _ poste: VoidPoste) {
+    if !poste.isFired {
+        poste.fire()
+    }
+    if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
+        _ = poste.group.wait(timeout: time)
+    }
+    else {
+        poste.group.wait()
+    }
     return
 }
 
-public func await<T>(_ poste: ThrowingOptionalPoste<T>) throws -> T? {
-    var result: T?
-    var error: Error?
-    poste.queue.sync {
-        result = poste.result
-        error = poste.error
+public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: ThrowingOptionalPoste<T>) throws -> T? {
+    if !poste.isFired {
+        poste.fire()
     }
-    guard error == nil else {
-        throw error!
+    if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
+        _ = poste.group.wait(timeout: time)
     }
-    return result
+    else {
+        poste.group.wait()
+    }
+    guard poste.error == nil else {
+        throw poste.error!
+    }
+    return poste.result
 }
 
-public func await<T>(_ poste: ThrowingRequiredPoste<T>) throws -> T {
-    var result: T!
-    var error: Error?
-    poste.queue.sync {
-        result = poste.result
-        error = poste.error
+public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: ThrowingRequiredPoste<T>) throws -> T {
+    if !poste.isFired {
+        poste.fire()
     }
-    guard error == nil else {
-        throw error!
+    if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
+        _ = poste.group.wait(timeout: time)
     }
-    return result
+    else {
+        poste.group.wait()
+    }
+    guard poste.error == nil else {
+        throw poste.error!
+    }
+    return poste.result
 }
 
-public func await(_ poste: ThrowingVoidPoste) throws {
-    var error: Error?
-    poste.queue.sync {
-        error = poste.error
+public func await(timeout: DispatchTimeInterval = .never, _ poste: ThrowingVoidPoste) throws {
+    if !poste.isFired {
+        poste.fire()
     }
-    guard error == nil else {
-        throw error!
+    if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
+        _ = poste.group.wait(timeout: time)
+    }
+    else {
+        poste.group.wait()
+    }
+    guard poste.error == nil else {
+        throw poste.error!
     }
     return
 }
