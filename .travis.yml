@@ -1,0 +1,12 @@
+language: swift
+
+os:
+  - osx
+
+osx_image: xcode10.2
+
+before_script:
+  - ./gyb +generate
+
+script:
+  - xcrun swift test
