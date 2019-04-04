@@ -6,9 +6,7 @@ internal let globalQueue =
         attributes: .concurrent)
 %{
 allposte = [
-    ("OptionalPoste", "?", "?"),
-    ("RequiredPoste", "!", ""),
-    ("VoidPoste", "Void", "Void"),
+    ("Poste", "!", ""),
 ]
 generictype = "T"
 generictype2 = "U"
@@ -21,14 +19,9 @@ generictype2 = "U"
         % for poste in allposte:
             %{
             classname = lazy + throwing + poste[0]
-            if poste[1] == "Void":
-                classdef = classname
-                valuetype = poste[2]
-                argtype = ""
-            else:
-                classdef = classname + "<%s>" % generictype
-                valuetype = generictype + poste[2]
-                argtype = valuetype
+            classdef = classname + "<%s>" % generictype
+            valuetype = generictype + poste[2]
+            argtype = valuetype
             }%
             % if not lazy:
 
@@ -36,12 +29,8 @@ public class ${classdef} {
 
     internal let group = DispatchGroup()
     internal let qos: DispatchQoS
-                % if poste[1] != "Void" or throwing:
 
-                % end
-                % if poste[1] != "Void":
     internal private(set) var result: ${generictype + poste[1]}
-                % end
                 % if throwing:
     internal private(set) var error: Error?
                 % end
@@ -63,21 +52,13 @@ public class ${classdef} {
         self.mainWorkItem = DispatchWorkItem(qos: self.qos) {
                 % if throwing:
             do {
-                    % if valuetype == "Void":
-                try closure()
-                    % else:
                 self.result = try closure()
-                    % end
             }
             catch {
                 self.error = error
             }
                 % else:
-                    % if valuetype == "Void":
-            closure()
-                    % else:
             self.result = closure()
-                    % end
                 % end
         }
         self.timeoutWorkItem = DispatchWorkItem(qos: self.qos) {
@@ -137,10 +118,7 @@ public class ${classdef} {
         globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
     }
 
-                % if poste[1] == "Void":
-    @discardableResult
-                % end
-    public func done(_ closure: @escaping (${argtype}) -> Void) -> ${classdef} {
+    public func done(_ closure: @escaping (${argtype}) -> Void) -> Self {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.done else {
@@ -155,10 +133,7 @@ public class ${classdef} {
         return self
     }
 
-                % if poste[1] == "Void":
-    @discardableResult
-                % end
-    public func cancelled(_ closure: @escaping () -> Void) -> ${classdef} {
+    public func cancelled(_ closure: @escaping () -> Void) -> Self {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.cancelled else {
@@ -170,10 +145,7 @@ public class ${classdef} {
     }
                 % if throwing:
 
-                    % if poste[1] == "Void":
-    @discardableResult
-                    % end
-    public func thrown(_ closure: @escaping (Error) -> Void) -> ${classdef} {
+    public func thrown(_ closure: @escaping (Error) -> Void) -> Self {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.thrown else {
@@ -188,14 +160,10 @@ public class ${classdef} {
                     % for poste2 in allposte:
                         %{
                         classname2 = throwing2 + poste2[0]
-                        genericdef2 = "" if poste2[1] == "Void" else \
-                                      "<%s>" % generictype2
+                        genericdef2 = "<%s>" % generictype2
                         classdef2 = classname2 + genericdef2
                         }%
 
-                        % if poste2[1] == "Void":
-    @discardableResult
-                        % end
     public func then${genericdef2}(_ lazy: Lazy${classdef2}) -> ${classdef2} {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
@@ -207,9 +175,6 @@ public class ${classdef} {
         return lazy
     }
 
-                        % if poste2[1] == "Void":
-    @discardableResult
-                        % end
     public func `else`${genericdef2}(_ lazy: Lazy${classdef2}) -> ${classdef2} {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
@@ -221,7 +186,86 @@ public class ${classdef} {
         return lazy
     }
                     % end
-                % end  
+                % end
+}
+
+extension ${classname}
+where T == Void {
+
+    @discardableResult
+    public func done(_ closure: @escaping (${argtype}) -> Void) -> Self {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+                % if argtype:
+            closure(self.result)
+                % else:
+            closure()
+                % end
+        }
+        return self
+    }
+
+    @discardableResult
+    public func cancelled(_ closure: @escaping () -> Void) -> Self {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.cancelled else {
+                return
+            }
+            closure()
+        }
+        return self
+    }
+                % if throwing:
+
+    @discardableResult
+    public func thrown(_ closure: @escaping (Error) -> Void) -> Self {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.thrown else {
+                return
+            }
+            closure(self.error!)
+        }
+        return self
+    }
+                % end
+                % for throwing2 in ["", "Throwing"]:
+                    % for poste2 in allposte:
+                        %{
+                        classname2 = throwing2 + poste2[0]
+                        genericdef2 = "<%s>" % generictype2
+                        classdef2 = classname2 + genericdef2
+                        }%
+
+    @discardableResult
+    public func then${genericdef2}(_ lazy: Lazy${classdef2}) -> ${classdef2} {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func `else`${genericdef2}(_ lazy: Lazy${classdef2}) -> ${classdef2} {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+                    % end
+                % end
 }
             % else:
 

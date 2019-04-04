@@ -14,6 +14,8 @@ extension DispatchTime {
         case .nanoseconds(let interval):
             intervalNanoseconds = UInt64(interval) * 1
         case .never:
+            fallthrough
+        @unknown default:  // for objective-c projects
             return nil
         }
         let uptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
