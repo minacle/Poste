@@ -8,7 +8,217 @@ internal let globalQueue =
         label: "moe.minacle.lib.poste",
         attributes: .concurrent)
 
-public class Poste<T> {
+public class OptionalPoste<T> {
+
+    internal let group = DispatchGroup()
+    internal let qos: DispatchQoS
+
+    internal private(set) var result: T?
+
+    private var mainWorkItem: DispatchWorkItem!
+    private var timeoutWorkItem: DispatchWorkItem!
+
+    private var done = false
+    private var cancelled = false
+
+    internal private(set) var isFired = false
+
+    internal required init(closure: @escaping () -> T?, qos: DispatchQoS, timeout: DispatchTimeInterval) {
+        self.group.enter()
+        self.qos = qos
+        self.mainWorkItem = DispatchWorkItem(qos: self.qos) {
+            self.result = closure()
+        }
+        self.timeoutWorkItem = DispatchWorkItem(qos: self.qos) {
+            if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
+                switch self.mainWorkItem.wait(timeout: time) {
+                case .success:
+                    self.done = true
+                case .timedOut:
+                    self.mainWorkItem.cancel()
+                    self.cancelled = true
+                }
+            }
+            else {
+                self.mainWorkItem.wait()
+                self.done = true
+            }
+        }
+        self.timeoutWorkItem.notify(qos: self.qos, queue: globalQueue) {
+            self.group.leave()
+        }
+        self.fire()
+    }
+
+    internal func fire() {
+        guard !self.isFired else {
+            return
+        }
+        self.isFired = true
+        globalQueue.async(group: self.group, execute: self.mainWorkItem)
+        globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
+    }
+
+    public func done(_ closure: @escaping (T?) -> Void) -> OptionalPoste<T> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            closure(self.result)
+        }
+        return self
+    }
+
+    public func cancelled(_ closure: @escaping () -> Void) -> OptionalPoste<T> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.cancelled else {
+                return
+            }
+            closure()
+        }
+        return self
+    }
+
+    public func then<U>(_ lazy: LazyOptionalPoste<U>) -> OptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyOptionalPoste<U>) -> OptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyRequiredPoste<U>) -> RequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyRequiredPoste<U>) -> RequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func then(_ lazy: LazyVoidPoste) -> VoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func `else`(_ lazy: LazyVoidPoste) -> VoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyThrowingOptionalPoste<U>) -> ThrowingOptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyThrowingOptionalPoste<U>) -> ThrowingOptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyThrowingRequiredPoste<U>) -> ThrowingRequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyThrowingRequiredPoste<U>) -> ThrowingRequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func then(_ lazy: LazyThrowingVoidPoste) -> ThrowingVoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func `else`(_ lazy: LazyThrowingVoidPoste) -> ThrowingVoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+}
+
+public class RequiredPoste<T> {
 
     internal let group = DispatchGroup()
     internal let qos: DispatchQoS
@@ -59,7 +269,7 @@ public class Poste<T> {
         globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
     }
 
-    public func done(_ closure: @escaping (T) -> Void) -> Self {
+    public func done(_ closure: @escaping (T) -> Void) -> RequiredPoste<T> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.done else {
@@ -70,7 +280,7 @@ public class Poste<T> {
         return self
     }
 
-    public func cancelled(_ closure: @escaping () -> Void) -> Self {
+    public func cancelled(_ closure: @escaping () -> Void) -> RequiredPoste<T> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.cancelled else {
@@ -81,7 +291,7 @@ public class Poste<T> {
         return self
     }
 
-    public func then<U>(_ lazy: LazyPoste<U>) -> Poste<U> {
+    public func then<U>(_ lazy: LazyOptionalPoste<U>) -> OptionalPoste<U> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.done else {
@@ -92,7 +302,7 @@ public class Poste<T> {
         return lazy
     }
 
-    public func `else`<U>(_ lazy: LazyPoste<U>) -> Poste<U> {
+    public func `else`<U>(_ lazy: LazyOptionalPoste<U>) -> OptionalPoste<U> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard !self.done else {
@@ -103,7 +313,7 @@ public class Poste<T> {
         return lazy
     }
 
-    public func then<U>(_ lazy: LazyThrowingPoste<U>) -> ThrowingPoste<U> {
+    public func then<U>(_ lazy: LazyRequiredPoste<U>) -> RequiredPoste<U> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.done else {
@@ -114,7 +324,99 @@ public class Poste<T> {
         return lazy
     }
 
-    public func `else`<U>(_ lazy: LazyThrowingPoste<U>) -> ThrowingPoste<U> {
+    public func `else`<U>(_ lazy: LazyRequiredPoste<U>) -> RequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func then(_ lazy: LazyVoidPoste) -> VoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func `else`(_ lazy: LazyVoidPoste) -> VoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyThrowingOptionalPoste<U>) -> ThrowingOptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyThrowingOptionalPoste<U>) -> ThrowingOptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyThrowingRequiredPoste<U>) -> ThrowingRequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyThrowingRequiredPoste<U>) -> ThrowingRequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func then(_ lazy: LazyThrowingVoidPoste) -> ThrowingVoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func `else`(_ lazy: LazyThrowingVoidPoste) -> ThrowingVoidPoste {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard !self.done else {
@@ -126,23 +428,69 @@ public class Poste<T> {
     }
 }
 
-extension Poste
-where T == Void {
+public class VoidPoste {
+
+    internal let group = DispatchGroup()
+    internal let qos: DispatchQoS
+
+    private var mainWorkItem: DispatchWorkItem!
+    private var timeoutWorkItem: DispatchWorkItem!
+
+    private var done = false
+    private var cancelled = false
+
+    internal private(set) var isFired = false
+
+    internal required init(closure: @escaping () -> Void, qos: DispatchQoS, timeout: DispatchTimeInterval) {
+        self.group.enter()
+        self.qos = qos
+        self.mainWorkItem = DispatchWorkItem(qos: self.qos) {
+            closure()
+        }
+        self.timeoutWorkItem = DispatchWorkItem(qos: self.qos) {
+            if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
+                switch self.mainWorkItem.wait(timeout: time) {
+                case .success:
+                    self.done = true
+                case .timedOut:
+                    self.mainWorkItem.cancel()
+                    self.cancelled = true
+                }
+            }
+            else {
+                self.mainWorkItem.wait()
+                self.done = true
+            }
+        }
+        self.timeoutWorkItem.notify(qos: self.qos, queue: globalQueue) {
+            self.group.leave()
+        }
+        self.fire()
+    }
+
+    internal func fire() {
+        guard !self.isFired else {
+            return
+        }
+        self.isFired = true
+        globalQueue.async(group: self.group, execute: self.mainWorkItem)
+        globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
+    }
 
     @discardableResult
-    public func done(_ closure: @escaping (T) -> Void) -> Self {
+    public func done(_ closure: @escaping () -> Void) -> VoidPoste {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.done else {
                 return
             }
-            closure(self.result)
+            closure()
         }
         return self
     }
 
     @discardableResult
-    public func cancelled(_ closure: @escaping () -> Void) -> Self {
+    public func cancelled(_ closure: @escaping () -> Void) -> VoidPoste {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.cancelled else {
@@ -153,8 +501,7 @@ where T == Void {
         return self
     }
 
-    @discardableResult
-    public func then<U>(_ lazy: LazyPoste<U>) -> Poste<U> {
+    public func then<U>(_ lazy: LazyOptionalPoste<U>) -> OptionalPoste<U> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.done else {
@@ -165,8 +512,29 @@ where T == Void {
         return lazy
     }
 
-    @discardableResult
-    public func `else`<U>(_ lazy: LazyPoste<U>) -> Poste<U> {
+    public func `else`<U>(_ lazy: LazyOptionalPoste<U>) -> OptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyRequiredPoste<U>) -> RequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyRequiredPoste<U>) -> RequiredPoste<U> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard !self.done else {
@@ -178,7 +546,7 @@ where T == Void {
     }
 
     @discardableResult
-    public func then<U>(_ lazy: LazyThrowingPoste<U>) -> ThrowingPoste<U> {
+    public func then(_ lazy: LazyVoidPoste) -> VoidPoste {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.done else {
@@ -190,7 +558,75 @@ where T == Void {
     }
 
     @discardableResult
-    public func `else`<U>(_ lazy: LazyThrowingPoste<U>) -> ThrowingPoste<U> {
+    public func `else`(_ lazy: LazyVoidPoste) -> VoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyThrowingOptionalPoste<U>) -> ThrowingOptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyThrowingOptionalPoste<U>) -> ThrowingOptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyThrowingRequiredPoste<U>) -> ThrowingRequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyThrowingRequiredPoste<U>) -> ThrowingRequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func then(_ lazy: LazyThrowingVoidPoste) -> ThrowingVoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func `else`(_ lazy: LazyThrowingVoidPoste) -> ThrowingVoidPoste {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard !self.done else {
@@ -202,7 +638,250 @@ where T == Void {
     }
 }
 
-public class ThrowingPoste<T> {
+public class ThrowingOptionalPoste<T> {
+
+    internal let group = DispatchGroup()
+    internal let qos: DispatchQoS
+
+    internal private(set) var result: T?
+    internal private(set) var error: Error?
+
+    private var mainWorkItem: DispatchWorkItem!
+    private var timeoutWorkItem: DispatchWorkItem!
+
+    private var done = false
+    private var cancelled = false
+    private var thrown = false
+
+    internal private(set) var isFired = false
+
+    internal required init(closure: @escaping () throws -> T?, qos: DispatchQoS, timeout: DispatchTimeInterval) {
+        self.group.enter()
+        self.qos = qos
+        self.mainWorkItem = DispatchWorkItem(qos: self.qos) {
+            do {
+                self.result = try closure()
+            }
+            catch {
+                self.error = error
+            }
+        }
+        self.timeoutWorkItem = DispatchWorkItem(qos: self.qos) {
+            if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
+                switch self.mainWorkItem.wait(timeout: time) {
+                case .success:
+                    if self.error == nil {
+                        self.done = true
+                    }
+                    else {
+                        self.thrown = true
+                    }
+                case .timedOut:
+                    self.mainWorkItem.cancel()
+                    if self.error == nil {
+                        self.cancelled = true
+                    }
+                    else {
+                        self.thrown = true
+                    }
+                }
+            }
+            else {
+                self.mainWorkItem.wait()
+                if self.error == nil {
+                    self.done = true
+                }
+                else {
+                    self.thrown = true
+                }
+            }
+        }
+        self.timeoutWorkItem.notify(qos: self.qos, queue: globalQueue) {
+            self.group.leave()
+        }
+        self.fire()
+    }
+
+    internal func fire() {
+        guard !self.isFired else {
+            return
+        }
+        self.isFired = true
+        globalQueue.async(group: self.group, execute: self.mainWorkItem)
+        globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
+    }
+
+    public func done(_ closure: @escaping (T?) -> Void) -> ThrowingOptionalPoste<T> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            closure(self.result)
+        }
+        return self
+    }
+
+    public func cancelled(_ closure: @escaping () -> Void) -> ThrowingOptionalPoste<T> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.cancelled else {
+                return
+            }
+            closure()
+        }
+        return self
+    }
+
+    public func thrown(_ closure: @escaping (Error) -> Void) -> ThrowingOptionalPoste<T> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.thrown else {
+                return
+            }
+            closure(self.error!)
+        }
+        return self
+    }
+
+    public func then<U>(_ lazy: LazyOptionalPoste<U>) -> OptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyOptionalPoste<U>) -> OptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyRequiredPoste<U>) -> RequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyRequiredPoste<U>) -> RequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func then(_ lazy: LazyVoidPoste) -> VoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func `else`(_ lazy: LazyVoidPoste) -> VoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyThrowingOptionalPoste<U>) -> ThrowingOptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyThrowingOptionalPoste<U>) -> ThrowingOptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyThrowingRequiredPoste<U>) -> ThrowingRequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyThrowingRequiredPoste<U>) -> ThrowingRequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func then(_ lazy: LazyThrowingVoidPoste) -> ThrowingVoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func `else`(_ lazy: LazyThrowingVoidPoste) -> ThrowingVoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+}
+
+public class ThrowingRequiredPoste<T> {
 
     internal let group = DispatchGroup()
     internal let qos: DispatchQoS
@@ -275,7 +954,7 @@ public class ThrowingPoste<T> {
         globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
     }
 
-    public func done(_ closure: @escaping (T) -> Void) -> Self {
+    public func done(_ closure: @escaping (T) -> Void) -> ThrowingRequiredPoste<T> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.done else {
@@ -286,7 +965,7 @@ public class ThrowingPoste<T> {
         return self
     }
 
-    public func cancelled(_ closure: @escaping () -> Void) -> Self {
+    public func cancelled(_ closure: @escaping () -> Void) -> ThrowingRequiredPoste<T> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.cancelled else {
@@ -297,7 +976,7 @@ public class ThrowingPoste<T> {
         return self
     }
 
-    public func thrown(_ closure: @escaping (Error) -> Void) -> Self {
+    public func thrown(_ closure: @escaping (Error) -> Void) -> ThrowingRequiredPoste<T> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.thrown else {
@@ -308,7 +987,7 @@ public class ThrowingPoste<T> {
         return self
     }
 
-    public func then<U>(_ lazy: LazyPoste<U>) -> Poste<U> {
+    public func then<U>(_ lazy: LazyOptionalPoste<U>) -> OptionalPoste<U> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.done else {
@@ -319,7 +998,7 @@ public class ThrowingPoste<T> {
         return lazy
     }
 
-    public func `else`<U>(_ lazy: LazyPoste<U>) -> Poste<U> {
+    public func `else`<U>(_ lazy: LazyOptionalPoste<U>) -> OptionalPoste<U> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard !self.done else {
@@ -330,7 +1009,7 @@ public class ThrowingPoste<T> {
         return lazy
     }
 
-    public func then<U>(_ lazy: LazyThrowingPoste<U>) -> ThrowingPoste<U> {
+    public func then<U>(_ lazy: LazyRequiredPoste<U>) -> RequiredPoste<U> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.done else {
@@ -341,7 +1020,99 @@ public class ThrowingPoste<T> {
         return lazy
     }
 
-    public func `else`<U>(_ lazy: LazyThrowingPoste<U>) -> ThrowingPoste<U> {
+    public func `else`<U>(_ lazy: LazyRequiredPoste<U>) -> RequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func then(_ lazy: LazyVoidPoste) -> VoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func `else`(_ lazy: LazyVoidPoste) -> VoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyThrowingOptionalPoste<U>) -> ThrowingOptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyThrowingOptionalPoste<U>) -> ThrowingOptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyThrowingRequiredPoste<U>) -> ThrowingRequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyThrowingRequiredPoste<U>) -> ThrowingRequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func then(_ lazy: LazyThrowingVoidPoste) -> ThrowingVoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func `else`(_ lazy: LazyThrowingVoidPoste) -> ThrowingVoidPoste {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard !self.done else {
@@ -353,23 +1124,92 @@ public class ThrowingPoste<T> {
     }
 }
 
-extension ThrowingPoste
-where T == Void {
+public class ThrowingVoidPoste {
+
+    internal let group = DispatchGroup()
+    internal let qos: DispatchQoS
+
+    internal private(set) var error: Error?
+
+    private var mainWorkItem: DispatchWorkItem!
+    private var timeoutWorkItem: DispatchWorkItem!
+
+    private var done = false
+    private var cancelled = false
+    private var thrown = false
+
+    internal private(set) var isFired = false
+
+    internal required init(closure: @escaping () throws -> Void, qos: DispatchQoS, timeout: DispatchTimeInterval) {
+        self.group.enter()
+        self.qos = qos
+        self.mainWorkItem = DispatchWorkItem(qos: self.qos) {
+            do {
+                try closure()
+            }
+            catch {
+                self.error = error
+            }
+        }
+        self.timeoutWorkItem = DispatchWorkItem(qos: self.qos) {
+            if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
+                switch self.mainWorkItem.wait(timeout: time) {
+                case .success:
+                    if self.error == nil {
+                        self.done = true
+                    }
+                    else {
+                        self.thrown = true
+                    }
+                case .timedOut:
+                    self.mainWorkItem.cancel()
+                    if self.error == nil {
+                        self.cancelled = true
+                    }
+                    else {
+                        self.thrown = true
+                    }
+                }
+            }
+            else {
+                self.mainWorkItem.wait()
+                if self.error == nil {
+                    self.done = true
+                }
+                else {
+                    self.thrown = true
+                }
+            }
+        }
+        self.timeoutWorkItem.notify(qos: self.qos, queue: globalQueue) {
+            self.group.leave()
+        }
+        self.fire()
+    }
+
+    internal func fire() {
+        guard !self.isFired else {
+            return
+        }
+        self.isFired = true
+        globalQueue.async(group: self.group, execute: self.mainWorkItem)
+        globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
+    }
 
     @discardableResult
-    public func done(_ closure: @escaping (T) -> Void) -> Self {
+    public func done(_ closure: @escaping () -> Void) -> ThrowingVoidPoste {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.done else {
                 return
             }
-            closure(self.result)
+            closure()
         }
         return self
     }
 
     @discardableResult
-    public func cancelled(_ closure: @escaping () -> Void) -> Self {
+    public func cancelled(_ closure: @escaping () -> Void) -> ThrowingVoidPoste {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.cancelled else {
@@ -381,7 +1221,7 @@ where T == Void {
     }
 
     @discardableResult
-    public func thrown(_ closure: @escaping (Error) -> Void) -> Self {
+    public func thrown(_ closure: @escaping (Error) -> Void) -> ThrowingVoidPoste {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.thrown else {
@@ -392,8 +1232,7 @@ where T == Void {
         return self
     }
 
-    @discardableResult
-    public func then<U>(_ lazy: LazyPoste<U>) -> Poste<U> {
+    public func then<U>(_ lazy: LazyOptionalPoste<U>) -> OptionalPoste<U> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.done else {
@@ -404,8 +1243,29 @@ where T == Void {
         return lazy
     }
 
-    @discardableResult
-    public func `else`<U>(_ lazy: LazyPoste<U>) -> Poste<U> {
+    public func `else`<U>(_ lazy: LazyOptionalPoste<U>) -> OptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyRequiredPoste<U>) -> RequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyRequiredPoste<U>) -> RequiredPoste<U> {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard !self.done else {
@@ -417,7 +1277,7 @@ where T == Void {
     }
 
     @discardableResult
-    public func then<U>(_ lazy: LazyThrowingPoste<U>) -> ThrowingPoste<U> {
+    public func then(_ lazy: LazyVoidPoste) -> VoidPoste {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard self.done else {
@@ -429,7 +1289,75 @@ where T == Void {
     }
 
     @discardableResult
-    public func `else`<U>(_ lazy: LazyThrowingPoste<U>) -> ThrowingPoste<U> {
+    public func `else`(_ lazy: LazyVoidPoste) -> VoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyThrowingOptionalPoste<U>) -> ThrowingOptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyThrowingOptionalPoste<U>) -> ThrowingOptionalPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func then<U>(_ lazy: LazyThrowingRequiredPoste<U>) -> ThrowingRequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    public func `else`<U>(_ lazy: LazyThrowingRequiredPoste<U>) -> ThrowingRequiredPoste<U> {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard !self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func then(_ lazy: LazyThrowingVoidPoste) -> ThrowingVoidPoste {
+        globalQueue.async(qos: self.qos) {
+            self.group.wait()
+            guard self.done else {
+                return
+            }
+            lazy.fire()
+        }
+        return lazy
+    }
+
+    @discardableResult
+    public func `else`(_ lazy: LazyThrowingVoidPoste) -> ThrowingVoidPoste {
         globalQueue.async(qos: self.qos) {
             self.group.wait()
             guard !self.done else {
@@ -441,7 +1369,7 @@ where T == Void {
     }
 }
 
-public class LazyPoste<T>: Poste<T> {
+public class LazyOptionalPoste<T>: OptionalPoste<T> {
 
     private var shouldFire = false
 
@@ -453,7 +1381,55 @@ public class LazyPoste<T>: Poste<T> {
     }
 }
 
-public class LazyThrowingPoste<T>: ThrowingPoste<T> {
+public class LazyRequiredPoste<T>: RequiredPoste<T> {
+
+    private var shouldFire = false
+
+    internal override func fire() {
+        guard self.shouldFire else {
+            return self.shouldFire = true
+        }
+        super.fire()
+    }
+}
+
+public class LazyVoidPoste: VoidPoste {
+
+    private var shouldFire = false
+
+    internal override func fire() {
+        guard self.shouldFire else {
+            return self.shouldFire = true
+        }
+        super.fire()
+    }
+}
+
+public class LazyThrowingOptionalPoste<T>: ThrowingOptionalPoste<T> {
+
+    private var shouldFire = false
+
+    internal override func fire() {
+        guard self.shouldFire else {
+            return self.shouldFire = true
+        }
+        super.fire()
+    }
+}
+
+public class LazyThrowingRequiredPoste<T>: ThrowingRequiredPoste<T> {
+
+    private var shouldFire = false
+
+    internal override func fire() {
+        guard self.shouldFire else {
+            return self.shouldFire = true
+        }
+        super.fire()
+    }
+}
+
+public class LazyThrowingVoidPoste: ThrowingVoidPoste {
 
     private var shouldFire = false
 
