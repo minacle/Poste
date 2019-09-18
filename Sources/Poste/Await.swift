@@ -1,6 +1,6 @@
 import Dispatch
 
-public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: OptionalPoste<T>) -> T? {
+public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: NullablePoste<T>) -> T? {
     if !poste.isFired {
         poste.fire()
     }
@@ -13,7 +13,7 @@ public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: OptionalPo
     return poste.result
 }
 
-public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: RequiredPoste<T>) -> T {
+public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: NonnullPoste<T>) -> T {
     if !poste.isFired {
         poste.fire()
     }
@@ -39,7 +39,7 @@ public func await(timeout: DispatchTimeInterval = .never, _ poste: VoidPoste) {
     return
 }
 
-public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: ThrowingOptionalPoste<T>) throws -> T? {
+public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: ThrowingNullablePoste<T>) throws -> T? {
     if !poste.isFired {
         poste.fire()
     }
@@ -55,7 +55,7 @@ public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: ThrowingOp
     return poste.result
 }
 
-public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: ThrowingRequiredPoste<T>) throws -> T {
+public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: ThrowingNonnullPoste<T>) throws -> T {
     if !poste.isFired {
         poste.fire()
     }
