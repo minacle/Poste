@@ -93,20 +93,22 @@ do
                                  echo // DO NOT EDIT ; \
                                  echo ; \
                                  cat "'"${NAME%.gyb}" ; } > "$TEMP" ;'" \
-                                 mv "'"$TEMP" "${NAME%.gyb}" ;' \;
+                               mv "'"$TEMP" "${NAME%.gyb}" ;' \;
+        exit $?
         ;;
     list)
         find . -type f -name '*.gyb' -print
+        exit $?
         ;;
     remove)
         find . -type f -name '*.gyb' \
                -exec "$SH" -c 'NAME="{}"; rm "${NAME%.gyb}"' \;
+        exit $?
         ;;
     upgrade)
         if [ -n $NEWGYB ]
         then
-            shift
-            continue
+            exit 0
         else
             rm "$GYB"
             mkdir -p "$(dirname $GYB)"
@@ -118,6 +120,7 @@ do
                 exit 1
             fi
         fi
+        exit 0
         ;;
     help)
         echo usage: "$(basename $0)" '[+help]' '[+generate]' '[+list]' \
@@ -126,8 +129,7 @@ do
         exec "$PY" "$GYB" -h
         ;;
     *)
-        shift
-        continue
+        exit 64
     esac
     shift
 done
