@@ -81,10 +81,61 @@ final class PosteTests: XCTestCase {
         XCTAssertEqual(number, count)
     }
 
-    static var allTests = [
-        ("testRequired", testRequired),
-        ("testRequiredAsync", testRequiredAsync),
-        ("testOptional", testOptional),
-        ("testVoid", testVoid),
-    ]
+    func testDone() {
+        let count = 32 * (.bitWidth / 32) - 1
+        let queue =
+            DispatchQueue(
+                label: "moe.minacle.lib.poste.test")
+        let dsema = DispatchSemaphore(value: 0)
+        var number = 0
+        for _ in 0 ..< count {
+            async {
+                sleep(1)
+            }
+            .done {
+                queue.sync {
+                    number += 1
+                }
+                dsema.signal()
+            }
+            .cancelled {
+                XCTFail()
+                dsema.signal()
+            }
+        }
+        let wallTime = DispatchWallTime.now() + Double(count) + 1
+        for _ in 0 ..< count {
+            _ = dsema.wait(wallTimeout: wallTime)
+        }
+        XCTAssertEqual(count, number)
+    }
+
+    func testCancelled() {
+        let count = 32 * (.bitWidth / 32) - 1
+        let queue =
+            DispatchQueue(
+                label: "moe.minacle.lib.poste.test")
+        let dsema = DispatchSemaphore(value: 0)
+        var number = 0
+        for _ in 0 ..< count {
+            async(timeout: .seconds(1)) {
+                sleep(10)
+            }
+            .done {
+                XCTFail()
+                dsema.signal()
+            }
+            .cancelled {
+                queue.sync {
+                    number += 1
+                }
+                dsema.signal()
+            }
+        }
+        let wallTime = DispatchWallTime.now() + Double(count) + 1
+        for _ in 0 ..< count {
+            _ = dsema.wait(wallTimeout: wallTime)
+        }
+        XCTAssertEqual(count, number)
+    }
 }
