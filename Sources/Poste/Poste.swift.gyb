@@ -1,17 +1,25 @@
 import Dispatch
 
+public enum PosteState {
+
+    case suspended
+    case running
+    case done
+    case cancelled
+    case thrown
+}
+
 internal let globalQueue =
     DispatchQueue(
         label: "moe.minacle.lib.poste",
         attributes: .concurrent)
 %{
 allposte = [
-    ("NullablePoste", "?", "?"),
-    ("NonnullPoste", "!", ""),
-    ("VoidPoste", "Void", "Void"),
+    ("NullablePoste", "?", "?", ""),
+    ("NonnullPoste", "!", "", "!"),
+    ("VoidPoste", "", "Void", ""),
 ]
 generictype = "T"
-generictype2 = "U"
 }%
 % for throwing in ["", "Throwing"]:
     %{
@@ -20,25 +28,27 @@ generictype2 = "U"
     % for poste in allposte:
         %{
         classname = throwing + poste[0]
-        if poste[1] == "Void":
+        if not poste[1]:
             classdef = classname
+            vartype = poste[2]
             valuetype = poste[2]
             argtype = ""
         else:
             classdef = classname + "<%s>" % generictype
+            vartype = generictype + poste[1]
             valuetype = generictype + poste[2]
-            argtype = valuetype
+            argtype = generictype + poste[2]
         }%
 
-public class ${classdef} {
+open class ${classdef} {
 
     internal let group = DispatchGroup()
     internal let qos: DispatchQoS
-        % if poste[1] != "Void" or throwing:
+        % if poste[1] or throwing:
 
         % end
-        % if poste[1] != "Void":
-    internal private(set) var result: ${generictype + poste[1]}
+        % if poste[1]:
+    internal private(set) var result: ${vartype}
         % end
         % if throwing:
     internal private(set) var error: Error?
@@ -47,15 +57,21 @@ public class ${classdef} {
     private var mainWorkItem: DispatchWorkItem!
     private var timeoutWorkItem: DispatchWorkItem!
 
-    private var done = false
-    private var cancelled = false
+    private var doneClosures = [(${argtype}) -> Void]()
+    private var cancelledClosures = [() -> Void]()
         % if throwing:
-    private var thrown = false
+    private var thrownClosures = [(Error) -> Void]()
         % end
 
-    internal private(set) var isFired = false
+    private var hasEverActivatedOnce = false
 
-    internal required init(closure: @escaping ()${throws}-> ${valuetype}, qos: DispatchQoS, timeout: DispatchTimeInterval) {
+    private var _state = PosteState.suspended
+
+    public var state: PosteState {
+        return self._state
+    }
+
+    public required init(closure: @escaping ()${throws}-> ${valuetype}, qos: DispatchQoS, activate: Bool, timeout: DispatchTimeInterval) {
         self.group.enter()
         self.qos = qos
         self.mainWorkItem = DispatchWorkItem(qos: self.qos) {
@@ -84,25 +100,25 @@ public class ${classdef} {
                 case .success:
         % if throwing:
                     if self.error == nil {
-                        self.done = true
+                        self._state = .done
                     }
                     else {
-                        self.thrown = true
+                        self._state = .thrown
                     }
         % else:
-                    self.done = true
+                    self._state = .done
         % end
                 case .timedOut:
                     self.mainWorkItem.cancel()
         % if throwing:
                     if self.error == nil {
-                        self.cancelled = true
+                        self._state = .cancelled
                     }
                     else {
-                        self.thrown = true
+                        self._state = .thrown
                     }
         % else:
-                    self.cancelled = true
+                    self._state = .cancelled
         % end
                 }
             }
@@ -110,75 +126,188 @@ public class ${classdef} {
                 self.mainWorkItem.wait()
         % if throwing:
                 if self.error == nil {
-                    self.done = true
+                    self._state = .done
                 }
                 else {
-                    self.thrown = true
+                    self._state = .thrown
                 }
         % else:
-                self.done = true
+                self._state = .done
         % end
             }
         }
         self.timeoutWorkItem.notify(qos: self.qos, queue: globalQueue) {
             self.group.leave()
         }
-        self.fire()
+        self.group.notify(qos: self.qos, queue: globalQueue) {
+            switch self.state {
+            case .done:
+                let closures = self.doneClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+        % if poste[1]:
+                    let result = self.result${poste[3]}
+        % end
+                    globalQueue.sync {
+                        let closure = closure
+        % if poste[1]:
+                        let result = result
+        % end
+                        globalQueue.async(qos: self.qos) {
+        % if poste[1]:
+                            closure(result)
+        % else:
+                            closure()
+        % end
+                        }
+                    }
+                }
+            case .cancelled:
+                let closures = self.cancelledClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    globalQueue.sync {
+                        let closure = closure
+                        globalQueue.async(qos: self.qos) {
+                            closure()
+                        }
+                    }
+                }
+        % if throwing:
+            case .thrown:
+                let closures = self.thrownClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    let error = self.error!
+                    globalQueue.sync {
+                        let closure = closure
+                        let error = error
+                        globalQueue.async(qos: self.qos) {
+                            closure(error)
+                        }
+                    }
+                }
+        % end
+            default:
+                fatalError()
+            }
+            self.mainWorkItem = nil
+            self.timeoutWorkItem = nil
+            self.doneClosures.removeAll()
+            self.cancelledClosures.removeAll()
+        % if throwing:
+            self.thrownClosures.removeAll()
+        % end
+        }
+        if activate {
+            self.activate()
+        }
     }
 
-    internal func fire() {
-        guard !self.isFired else {
-            return
+    private func activate() {
+        guard !self.hasEverActivatedOnce
+        else {
+            fatalError("Cannot activate \(self): this poste is already activated.")
         }
-        self.isFired = true
+        self.hasEverActivatedOnce = true
+        self._state = .running
         globalQueue.async(group: self.group, execute: self.mainWorkItem)
         globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
     }
 
-        % if poste[1] == "Void":
+    open func cancel() {
+        guard
+            case .suspended = self.state,
+            case .running = self.state
+        else {
+            switch self.state {
+            case .done:
+                fatalError("cannot cancel \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot cancel \(self): this poste is already cancelled.")
+        % if throwing:
+            case .thrown:
+                fatalError("cannot cancel \(self): this poste is already thrown.")
+        % end
+            default:
+                fatalError()
+            }
+        }
+        self._state = .cancelled
+        self.mainWorkItem.cancel()
+    }
+
+    open func resume() {
+        guard self.hasEverActivatedOnce
+        else {
+            self.activate()
+            return
+        }
+        guard case .suspended = self.state
+        else {
+            switch self.state {
+            case .running:
+                fatalError("cannot resume \(self): this poste is already running.")
+            case .done:
+                fatalError("cannot resume \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot resume \(self): this poste is already cancelled.")
+        % if throwing:
+            case .thrown:
+                fatalError("cannot resume \(self): this poste is already thrown.")
+        % end
+            default:
+                fatalError()
+            }
+        }
+        self._state = .running
+        self.group.resume()
+    }
+
+    open func suspend() {
+        guard case .running = self.state
+        else {
+            switch self.state {
+            case .suspended:
+                fatalError("cannot suspend \(self): this poste is already suspended.")
+            case .done:
+                fatalError("cannot suspend \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot suspend \(self): this poste is already cancelled.")
+        % if throwing:
+            case .thrown:
+                fatalError("cannot suspend \(self): this poste is already thrown.")
+        % end
+            default:
+                fatalError()
+            }
+        }
+        self._state = .suspended
+        self.group.suspend()
+    }
+
+        % if not poste[1]:
     @discardableResult
         % end
     public func done(_ closure: @escaping (${argtype}) -> Void) -> ${classdef} {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.done else {
-                return
-            }
-        % if argtype:
-            closure(self.result)
-        % else:
-            closure()
-        % end
-        }
+        self.doneClosures.append(closure)
         return self
     }
 
-        % if poste[1] == "Void":
+        % if not poste[1]:
     @discardableResult
         % end
     public func cancelled(_ closure: @escaping () -> Void) -> ${classdef} {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.cancelled else {
-                return
-            }
-            closure()
-        }
+        self.cancelledClosures.append(closure)
         return self
     }
         % if throwing:
 
-            % if poste[1] == "Void":
+            % if not poste[1]:
     @discardableResult
             % end
     public func thrown(_ closure: @escaping (Error) -> Void) -> ${classdef} {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.thrown else {
-                return
-            }
-            closure(self.error!)
-        }
+        self.thrownClosures.append(closure)
         return self
     }
         % end

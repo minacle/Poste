@@ -1,8 +1,10 @@
 import Dispatch
 
-public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: NullablePoste<T>) -> T? {
-    if !poste.isFired {
-        poste.fire()
+public func await<T>(_ poste: NullablePoste<T>, timeout: DispatchTimeInterval = .never, resume: Bool = true) -> T? {
+    if resume {
+        if case .suspended = poste.state {
+            poste.resume()
+        }
     }
     if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
         _ = poste.group.wait(timeout: time)
@@ -13,9 +15,11 @@ public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: NullablePo
     return poste.result
 }
 
-public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: NonnullPoste<T>) -> T {
-    if !poste.isFired {
-        poste.fire()
+public func await<T>(_ poste: NonnullPoste<T>, timeout: DispatchTimeInterval = .never, resume: Bool = true) -> T {
+    if resume {
+        if case .suspended = poste.state {
+            poste.resume()
+        }
     }
     if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
         _ = poste.group.wait(timeout: time)
@@ -26,9 +30,11 @@ public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: NonnullPos
     return poste.result
 }
 
-public func await(timeout: DispatchTimeInterval = .never, _ poste: VoidPoste) {
-    if !poste.isFired {
-        poste.fire()
+public func await(_ poste: VoidPoste, timeout: DispatchTimeInterval = .never, resume: Bool = true) {
+    if resume {
+        if case .suspended = poste.state {
+            poste.resume()
+        }
     }
     if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
         _ = poste.group.wait(timeout: time)
@@ -39,9 +45,11 @@ public func await(timeout: DispatchTimeInterval = .never, _ poste: VoidPoste) {
     return
 }
 
-public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: ThrowingNullablePoste<T>) throws -> T? {
-    if !poste.isFired {
-        poste.fire()
+public func await<T>(_ poste: ThrowingNullablePoste<T>, timeout: DispatchTimeInterval = .never, resume: Bool = true) throws -> T? {
+    if resume {
+        if case .suspended = poste.state {
+            poste.resume()
+        }
     }
     if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
         _ = poste.group.wait(timeout: time)
@@ -55,9 +63,11 @@ public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: ThrowingNu
     return poste.result
 }
 
-public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: ThrowingNonnullPoste<T>) throws -> T {
-    if !poste.isFired {
-        poste.fire()
+public func await<T>(_ poste: ThrowingNonnullPoste<T>, timeout: DispatchTimeInterval = .never, resume: Bool = true) throws -> T {
+    if resume {
+        if case .suspended = poste.state {
+            poste.resume()
+        }
     }
     if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
         _ = poste.group.wait(timeout: time)
@@ -71,9 +81,11 @@ public func await<T>(timeout: DispatchTimeInterval = .never, _ poste: ThrowingNo
     return poste.result
 }
 
-public func await(timeout: DispatchTimeInterval = .never, _ poste: ThrowingVoidPoste) throws {
-    if !poste.isFired {
-        poste.fire()
+public func await(_ poste: ThrowingVoidPoste, timeout: DispatchTimeInterval = .never, resume: Bool = true) throws {
+    if resume {
+        if case .suspended = poste.state {
+            poste.resume()
+        }
     }
     if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
         _ = poste.group.wait(timeout: time)

@@ -3,12 +3,21 @@
 
 import Dispatch
 
+public enum PosteState {
+
+    case suspended
+    case running
+    case done
+    case cancelled
+    case thrown
+}
+
 internal let globalQueue =
     DispatchQueue(
         label: "moe.minacle.lib.poste",
         attributes: .concurrent)
 
-public class NullablePoste<T> {
+open class NullablePoste<T> {
 
     internal let group = DispatchGroup()
     internal let qos: DispatchQoS
@@ -18,12 +27,18 @@ public class NullablePoste<T> {
     private var mainWorkItem: DispatchWorkItem!
     private var timeoutWorkItem: DispatchWorkItem!
 
-    private var done = false
-    private var cancelled = false
+    private var doneClosures = [(T?) -> Void]()
+    private var cancelledClosures = [() -> Void]()
 
-    internal private(set) var isFired = false
+    private var hasEverActivatedOnce = false
 
-    internal required init(closure: @escaping () -> T?, qos: DispatchQoS, timeout: DispatchTimeInterval) {
+    private var _state = PosteState.suspended
+
+    public var state: PosteState {
+        return self._state
+    }
+
+    public required init(closure: @escaping () -> T?, qos: DispatchQoS, activate: Bool, timeout: DispatchTimeInterval) {
         self.group.enter()
         self.qos = qos
         self.mainWorkItem = DispatchWorkItem(qos: self.qos) {
@@ -33,56 +48,141 @@ public class NullablePoste<T> {
             if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
                 switch self.mainWorkItem.wait(timeout: time) {
                 case .success:
-                    self.done = true
+                    self._state = .done
                 case .timedOut:
                     self.mainWorkItem.cancel()
-                    self.cancelled = true
+                    self._state = .cancelled
                 }
             }
             else {
                 self.mainWorkItem.wait()
-                self.done = true
+                self._state = .done
             }
         }
         self.timeoutWorkItem.notify(qos: self.qos, queue: globalQueue) {
             self.group.leave()
         }
-        self.fire()
+        self.group.notify(qos: self.qos, queue: globalQueue) {
+            switch self.state {
+            case .done:
+                let closures = self.doneClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    let result = self.result
+                    globalQueue.sync {
+                        let closure = closure
+                        let result = result
+                        globalQueue.async(qos: self.qos) {
+                            closure(result)
+                        }
+                    }
+                }
+            case .cancelled:
+                let closures = self.cancelledClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    globalQueue.sync {
+                        let closure = closure
+                        globalQueue.async(qos: self.qos) {
+                            closure()
+                        }
+                    }
+                }
+            default:
+                fatalError()
+            }
+            self.mainWorkItem = nil
+            self.timeoutWorkItem = nil
+            self.doneClosures.removeAll()
+            self.cancelledClosures.removeAll()
+        }
+        if activate {
+            self.activate()
+        }
     }
 
-    internal func fire() {
-        guard !self.isFired else {
-            return
+    private func activate() {
+        guard !self.hasEverActivatedOnce
+        else {
+            fatalError("Cannot activate \(self): this poste is already activated.")
         }
-        self.isFired = true
+        self.hasEverActivatedOnce = true
+        self._state = .running
         globalQueue.async(group: self.group, execute: self.mainWorkItem)
         globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
     }
 
-    public func done(_ closure: @escaping (T?) -> Void) -> NullablePoste<T> {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.done else {
-                return
+    open func cancel() {
+        guard
+            case .suspended = self.state,
+            case .running = self.state
+        else {
+            switch self.state {
+            case .done:
+                fatalError("cannot cancel \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot cancel \(self): this poste is already cancelled.")
+            default:
+                fatalError()
             }
-            closure(self.result)
         }
+        self._state = .cancelled
+        self.mainWorkItem.cancel()
+    }
+
+    open func resume() {
+        guard self.hasEverActivatedOnce
+        else {
+            self.activate()
+            return
+        }
+        guard case .suspended = self.state
+        else {
+            switch self.state {
+            case .running:
+                fatalError("cannot resume \(self): this poste is already running.")
+            case .done:
+                fatalError("cannot resume \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot resume \(self): this poste is already cancelled.")
+            default:
+                fatalError()
+            }
+        }
+        self._state = .running
+        self.group.resume()
+    }
+
+    open func suspend() {
+        guard case .running = self.state
+        else {
+            switch self.state {
+            case .suspended:
+                fatalError("cannot suspend \(self): this poste is already suspended.")
+            case .done:
+                fatalError("cannot suspend \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot suspend \(self): this poste is already cancelled.")
+            default:
+                fatalError()
+            }
+        }
+        self._state = .suspended
+        self.group.suspend()
+    }
+
+    public func done(_ closure: @escaping (T?) -> Void) -> NullablePoste<T> {
+        self.doneClosures.append(closure)
         return self
     }
 
     public func cancelled(_ closure: @escaping () -> Void) -> NullablePoste<T> {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.cancelled else {
-                return
-            }
-            closure()
-        }
+        self.cancelledClosures.append(closure)
         return self
     }
 }
 
-public class NonnullPoste<T> {
+open class NonnullPoste<T> {
 
     internal let group = DispatchGroup()
     internal let qos: DispatchQoS
@@ -92,12 +192,18 @@ public class NonnullPoste<T> {
     private var mainWorkItem: DispatchWorkItem!
     private var timeoutWorkItem: DispatchWorkItem!
 
-    private var done = false
-    private var cancelled = false
+    private var doneClosures = [(T) -> Void]()
+    private var cancelledClosures = [() -> Void]()
 
-    internal private(set) var isFired = false
+    private var hasEverActivatedOnce = false
 
-    internal required init(closure: @escaping () -> T, qos: DispatchQoS, timeout: DispatchTimeInterval) {
+    private var _state = PosteState.suspended
+
+    public var state: PosteState {
+        return self._state
+    }
+
+    public required init(closure: @escaping () -> T, qos: DispatchQoS, activate: Bool, timeout: DispatchTimeInterval) {
         self.group.enter()
         self.qos = qos
         self.mainWorkItem = DispatchWorkItem(qos: self.qos) {
@@ -107,56 +213,141 @@ public class NonnullPoste<T> {
             if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
                 switch self.mainWorkItem.wait(timeout: time) {
                 case .success:
-                    self.done = true
+                    self._state = .done
                 case .timedOut:
                     self.mainWorkItem.cancel()
-                    self.cancelled = true
+                    self._state = .cancelled
                 }
             }
             else {
                 self.mainWorkItem.wait()
-                self.done = true
+                self._state = .done
             }
         }
         self.timeoutWorkItem.notify(qos: self.qos, queue: globalQueue) {
             self.group.leave()
         }
-        self.fire()
+        self.group.notify(qos: self.qos, queue: globalQueue) {
+            switch self.state {
+            case .done:
+                let closures = self.doneClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    let result = self.result!
+                    globalQueue.sync {
+                        let closure = closure
+                        let result = result
+                        globalQueue.async(qos: self.qos) {
+                            closure(result)
+                        }
+                    }
+                }
+            case .cancelled:
+                let closures = self.cancelledClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    globalQueue.sync {
+                        let closure = closure
+                        globalQueue.async(qos: self.qos) {
+                            closure()
+                        }
+                    }
+                }
+            default:
+                fatalError()
+            }
+            self.mainWorkItem = nil
+            self.timeoutWorkItem = nil
+            self.doneClosures.removeAll()
+            self.cancelledClosures.removeAll()
+        }
+        if activate {
+            self.activate()
+        }
     }
 
-    internal func fire() {
-        guard !self.isFired else {
-            return
+    private func activate() {
+        guard !self.hasEverActivatedOnce
+        else {
+            fatalError("Cannot activate \(self): this poste is already activated.")
         }
-        self.isFired = true
+        self.hasEverActivatedOnce = true
+        self._state = .running
         globalQueue.async(group: self.group, execute: self.mainWorkItem)
         globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
     }
 
-    public func done(_ closure: @escaping (T) -> Void) -> NonnullPoste<T> {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.done else {
-                return
+    open func cancel() {
+        guard
+            case .suspended = self.state,
+            case .running = self.state
+        else {
+            switch self.state {
+            case .done:
+                fatalError("cannot cancel \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot cancel \(self): this poste is already cancelled.")
+            default:
+                fatalError()
             }
-            closure(self.result)
         }
+        self._state = .cancelled
+        self.mainWorkItem.cancel()
+    }
+
+    open func resume() {
+        guard self.hasEverActivatedOnce
+        else {
+            self.activate()
+            return
+        }
+        guard case .suspended = self.state
+        else {
+            switch self.state {
+            case .running:
+                fatalError("cannot resume \(self): this poste is already running.")
+            case .done:
+                fatalError("cannot resume \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot resume \(self): this poste is already cancelled.")
+            default:
+                fatalError()
+            }
+        }
+        self._state = .running
+        self.group.resume()
+    }
+
+    open func suspend() {
+        guard case .running = self.state
+        else {
+            switch self.state {
+            case .suspended:
+                fatalError("cannot suspend \(self): this poste is already suspended.")
+            case .done:
+                fatalError("cannot suspend \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot suspend \(self): this poste is already cancelled.")
+            default:
+                fatalError()
+            }
+        }
+        self._state = .suspended
+        self.group.suspend()
+    }
+
+    public func done(_ closure: @escaping (T) -> Void) -> NonnullPoste<T> {
+        self.doneClosures.append(closure)
         return self
     }
 
     public func cancelled(_ closure: @escaping () -> Void) -> NonnullPoste<T> {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.cancelled else {
-                return
-            }
-            closure()
-        }
+        self.cancelledClosures.append(closure)
         return self
     }
 }
 
-public class VoidPoste {
+open class VoidPoste {
 
     internal let group = DispatchGroup()
     internal let qos: DispatchQoS
@@ -164,12 +355,18 @@ public class VoidPoste {
     private var mainWorkItem: DispatchWorkItem!
     private var timeoutWorkItem: DispatchWorkItem!
 
-    private var done = false
-    private var cancelled = false
+    private var doneClosures = [() -> Void]()
+    private var cancelledClosures = [() -> Void]()
 
-    internal private(set) var isFired = false
+    private var hasEverActivatedOnce = false
 
-    internal required init(closure: @escaping () -> Void, qos: DispatchQoS, timeout: DispatchTimeInterval) {
+    private var _state = PosteState.suspended
+
+    public var state: PosteState {
+        return self._state
+    }
+
+    public required init(closure: @escaping () -> Void, qos: DispatchQoS, activate: Bool, timeout: DispatchTimeInterval) {
         self.group.enter()
         self.qos = qos
         self.mainWorkItem = DispatchWorkItem(qos: self.qos) {
@@ -179,58 +376,141 @@ public class VoidPoste {
             if let time = DispatchTime(dispatchTimeIntervalSinceNow: timeout) {
                 switch self.mainWorkItem.wait(timeout: time) {
                 case .success:
-                    self.done = true
+                    self._state = .done
                 case .timedOut:
                     self.mainWorkItem.cancel()
-                    self.cancelled = true
+                    self._state = .cancelled
                 }
             }
             else {
                 self.mainWorkItem.wait()
-                self.done = true
+                self._state = .done
             }
         }
         self.timeoutWorkItem.notify(qos: self.qos, queue: globalQueue) {
             self.group.leave()
         }
-        self.fire()
+        self.group.notify(qos: self.qos, queue: globalQueue) {
+            switch self.state {
+            case .done:
+                let closures = self.doneClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    globalQueue.sync {
+                        let closure = closure
+                        globalQueue.async(qos: self.qos) {
+                            closure()
+                        }
+                    }
+                }
+            case .cancelled:
+                let closures = self.cancelledClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    globalQueue.sync {
+                        let closure = closure
+                        globalQueue.async(qos: self.qos) {
+                            closure()
+                        }
+                    }
+                }
+            default:
+                fatalError()
+            }
+            self.mainWorkItem = nil
+            self.timeoutWorkItem = nil
+            self.doneClosures.removeAll()
+            self.cancelledClosures.removeAll()
+        }
+        if activate {
+            self.activate()
+        }
     }
 
-    internal func fire() {
-        guard !self.isFired else {
-            return
+    private func activate() {
+        guard !self.hasEverActivatedOnce
+        else {
+            fatalError("Cannot activate \(self): this poste is already activated.")
         }
-        self.isFired = true
+        self.hasEverActivatedOnce = true
+        self._state = .running
         globalQueue.async(group: self.group, execute: self.mainWorkItem)
         globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
     }
 
+    open func cancel() {
+        guard
+            case .suspended = self.state,
+            case .running = self.state
+        else {
+            switch self.state {
+            case .done:
+                fatalError("cannot cancel \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot cancel \(self): this poste is already cancelled.")
+            default:
+                fatalError()
+            }
+        }
+        self._state = .cancelled
+        self.mainWorkItem.cancel()
+    }
+
+    open func resume() {
+        guard self.hasEverActivatedOnce
+        else {
+            self.activate()
+            return
+        }
+        guard case .suspended = self.state
+        else {
+            switch self.state {
+            case .running:
+                fatalError("cannot resume \(self): this poste is already running.")
+            case .done:
+                fatalError("cannot resume \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot resume \(self): this poste is already cancelled.")
+            default:
+                fatalError()
+            }
+        }
+        self._state = .running
+        self.group.resume()
+    }
+
+    open func suspend() {
+        guard case .running = self.state
+        else {
+            switch self.state {
+            case .suspended:
+                fatalError("cannot suspend \(self): this poste is already suspended.")
+            case .done:
+                fatalError("cannot suspend \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot suspend \(self): this poste is already cancelled.")
+            default:
+                fatalError()
+            }
+        }
+        self._state = .suspended
+        self.group.suspend()
+    }
+
     @discardableResult
     public func done(_ closure: @escaping () -> Void) -> VoidPoste {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.done else {
-                return
-            }
-            closure()
-        }
+        self.doneClosures.append(closure)
         return self
     }
 
     @discardableResult
     public func cancelled(_ closure: @escaping () -> Void) -> VoidPoste {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.cancelled else {
-                return
-            }
-            closure()
-        }
+        self.cancelledClosures.append(closure)
         return self
     }
 }
 
-public class ThrowingNullablePoste<T> {
+open class ThrowingNullablePoste<T> {
 
     internal let group = DispatchGroup()
     internal let qos: DispatchQoS
@@ -241,13 +521,19 @@ public class ThrowingNullablePoste<T> {
     private var mainWorkItem: DispatchWorkItem!
     private var timeoutWorkItem: DispatchWorkItem!
 
-    private var done = false
-    private var cancelled = false
-    private var thrown = false
+    private var doneClosures = [(T?) -> Void]()
+    private var cancelledClosures = [() -> Void]()
+    private var thrownClosures = [(Error) -> Void]()
 
-    internal private(set) var isFired = false
+    private var hasEverActivatedOnce = false
 
-    internal required init(closure: @escaping () throws -> T?, qos: DispatchQoS, timeout: DispatchTimeInterval) {
+    private var _state = PosteState.suspended
+
+    public var state: PosteState {
+        return self._state
+    }
+
+    public required init(closure: @escaping () throws -> T?, qos: DispatchQoS, activate: Bool, timeout: DispatchTimeInterval) {
         self.group.enter()
         self.qos = qos
         self.mainWorkItem = DispatchWorkItem(qos: self.qos) {
@@ -263,81 +549,180 @@ public class ThrowingNullablePoste<T> {
                 switch self.mainWorkItem.wait(timeout: time) {
                 case .success:
                     if self.error == nil {
-                        self.done = true
+                        self._state = .done
                     }
                     else {
-                        self.thrown = true
+                        self._state = .thrown
                     }
                 case .timedOut:
                     self.mainWorkItem.cancel()
                     if self.error == nil {
-                        self.cancelled = true
+                        self._state = .cancelled
                     }
                     else {
-                        self.thrown = true
+                        self._state = .thrown
                     }
                 }
             }
             else {
                 self.mainWorkItem.wait()
                 if self.error == nil {
-                    self.done = true
+                    self._state = .done
                 }
                 else {
-                    self.thrown = true
+                    self._state = .thrown
                 }
             }
         }
         self.timeoutWorkItem.notify(qos: self.qos, queue: globalQueue) {
             self.group.leave()
         }
-        self.fire()
+        self.group.notify(qos: self.qos, queue: globalQueue) {
+            switch self.state {
+            case .done:
+                let closures = self.doneClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    let result = self.result
+                    globalQueue.sync {
+                        let closure = closure
+                        let result = result
+                        globalQueue.async(qos: self.qos) {
+                            closure(result)
+                        }
+                    }
+                }
+            case .cancelled:
+                let closures = self.cancelledClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    globalQueue.sync {
+                        let closure = closure
+                        globalQueue.async(qos: self.qos) {
+                            closure()
+                        }
+                    }
+                }
+            case .thrown:
+                let closures = self.thrownClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    let error = self.error!
+                    globalQueue.sync {
+                        let closure = closure
+                        let error = error
+                        globalQueue.async(qos: self.qos) {
+                            closure(error)
+                        }
+                    }
+                }
+            default:
+                fatalError()
+            }
+            self.mainWorkItem = nil
+            self.timeoutWorkItem = nil
+            self.doneClosures.removeAll()
+            self.cancelledClosures.removeAll()
+            self.thrownClosures.removeAll()
+        }
+        if activate {
+            self.activate()
+        }
     }
 
-    internal func fire() {
-        guard !self.isFired else {
-            return
+    private func activate() {
+        guard !self.hasEverActivatedOnce
+        else {
+            fatalError("Cannot activate \(self): this poste is already activated.")
         }
-        self.isFired = true
+        self.hasEverActivatedOnce = true
+        self._state = .running
         globalQueue.async(group: self.group, execute: self.mainWorkItem)
         globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
     }
 
-    public func done(_ closure: @escaping (T?) -> Void) -> ThrowingNullablePoste<T> {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.done else {
-                return
+    open func cancel() {
+        guard
+            case .suspended = self.state,
+            case .running = self.state
+        else {
+            switch self.state {
+            case .done:
+                fatalError("cannot cancel \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot cancel \(self): this poste is already cancelled.")
+            case .thrown:
+                fatalError("cannot cancel \(self): this poste is already thrown.")
+            default:
+                fatalError()
             }
-            closure(self.result)
         }
+        self._state = .cancelled
+        self.mainWorkItem.cancel()
+    }
+
+    open func resume() {
+        guard self.hasEverActivatedOnce
+        else {
+            self.activate()
+            return
+        }
+        guard case .suspended = self.state
+        else {
+            switch self.state {
+            case .running:
+                fatalError("cannot resume \(self): this poste is already running.")
+            case .done:
+                fatalError("cannot resume \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot resume \(self): this poste is already cancelled.")
+            case .thrown:
+                fatalError("cannot resume \(self): this poste is already thrown.")
+            default:
+                fatalError()
+            }
+        }
+        self._state = .running
+        self.group.resume()
+    }
+
+    open func suspend() {
+        guard case .running = self.state
+        else {
+            switch self.state {
+            case .suspended:
+                fatalError("cannot suspend \(self): this poste is already suspended.")
+            case .done:
+                fatalError("cannot suspend \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot suspend \(self): this poste is already cancelled.")
+            case .thrown:
+                fatalError("cannot suspend \(self): this poste is already thrown.")
+            default:
+                fatalError()
+            }
+        }
+        self._state = .suspended
+        self.group.suspend()
+    }
+
+    public func done(_ closure: @escaping (T?) -> Void) -> ThrowingNullablePoste<T> {
+        self.doneClosures.append(closure)
         return self
     }
 
     public func cancelled(_ closure: @escaping () -> Void) -> ThrowingNullablePoste<T> {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.cancelled else {
-                return
-            }
-            closure()
-        }
+        self.cancelledClosures.append(closure)
         return self
     }
 
     public func thrown(_ closure: @escaping (Error) -> Void) -> ThrowingNullablePoste<T> {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.thrown else {
-                return
-            }
-            closure(self.error!)
-        }
+        self.thrownClosures.append(closure)
         return self
     }
 }
 
-public class ThrowingNonnullPoste<T> {
+open class ThrowingNonnullPoste<T> {
 
     internal let group = DispatchGroup()
     internal let qos: DispatchQoS
@@ -348,13 +733,19 @@ public class ThrowingNonnullPoste<T> {
     private var mainWorkItem: DispatchWorkItem!
     private var timeoutWorkItem: DispatchWorkItem!
 
-    private var done = false
-    private var cancelled = false
-    private var thrown = false
+    private var doneClosures = [(T) -> Void]()
+    private var cancelledClosures = [() -> Void]()
+    private var thrownClosures = [(Error) -> Void]()
 
-    internal private(set) var isFired = false
+    private var hasEverActivatedOnce = false
 
-    internal required init(closure: @escaping () throws -> T, qos: DispatchQoS, timeout: DispatchTimeInterval) {
+    private var _state = PosteState.suspended
+
+    public var state: PosteState {
+        return self._state
+    }
+
+    public required init(closure: @escaping () throws -> T, qos: DispatchQoS, activate: Bool, timeout: DispatchTimeInterval) {
         self.group.enter()
         self.qos = qos
         self.mainWorkItem = DispatchWorkItem(qos: self.qos) {
@@ -370,81 +761,180 @@ public class ThrowingNonnullPoste<T> {
                 switch self.mainWorkItem.wait(timeout: time) {
                 case .success:
                     if self.error == nil {
-                        self.done = true
+                        self._state = .done
                     }
                     else {
-                        self.thrown = true
+                        self._state = .thrown
                     }
                 case .timedOut:
                     self.mainWorkItem.cancel()
                     if self.error == nil {
-                        self.cancelled = true
+                        self._state = .cancelled
                     }
                     else {
-                        self.thrown = true
+                        self._state = .thrown
                     }
                 }
             }
             else {
                 self.mainWorkItem.wait()
                 if self.error == nil {
-                    self.done = true
+                    self._state = .done
                 }
                 else {
-                    self.thrown = true
+                    self._state = .thrown
                 }
             }
         }
         self.timeoutWorkItem.notify(qos: self.qos, queue: globalQueue) {
             self.group.leave()
         }
-        self.fire()
+        self.group.notify(qos: self.qos, queue: globalQueue) {
+            switch self.state {
+            case .done:
+                let closures = self.doneClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    let result = self.result!
+                    globalQueue.sync {
+                        let closure = closure
+                        let result = result
+                        globalQueue.async(qos: self.qos) {
+                            closure(result)
+                        }
+                    }
+                }
+            case .cancelled:
+                let closures = self.cancelledClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    globalQueue.sync {
+                        let closure = closure
+                        globalQueue.async(qos: self.qos) {
+                            closure()
+                        }
+                    }
+                }
+            case .thrown:
+                let closures = self.thrownClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    let error = self.error!
+                    globalQueue.sync {
+                        let closure = closure
+                        let error = error
+                        globalQueue.async(qos: self.qos) {
+                            closure(error)
+                        }
+                    }
+                }
+            default:
+                fatalError()
+            }
+            self.mainWorkItem = nil
+            self.timeoutWorkItem = nil
+            self.doneClosures.removeAll()
+            self.cancelledClosures.removeAll()
+            self.thrownClosures.removeAll()
+        }
+        if activate {
+            self.activate()
+        }
     }
 
-    internal func fire() {
-        guard !self.isFired else {
-            return
+    private func activate() {
+        guard !self.hasEverActivatedOnce
+        else {
+            fatalError("Cannot activate \(self): this poste is already activated.")
         }
-        self.isFired = true
+        self.hasEverActivatedOnce = true
+        self._state = .running
         globalQueue.async(group: self.group, execute: self.mainWorkItem)
         globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
     }
 
-    public func done(_ closure: @escaping (T) -> Void) -> ThrowingNonnullPoste<T> {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.done else {
-                return
+    open func cancel() {
+        guard
+            case .suspended = self.state,
+            case .running = self.state
+        else {
+            switch self.state {
+            case .done:
+                fatalError("cannot cancel \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot cancel \(self): this poste is already cancelled.")
+            case .thrown:
+                fatalError("cannot cancel \(self): this poste is already thrown.")
+            default:
+                fatalError()
             }
-            closure(self.result)
         }
+        self._state = .cancelled
+        self.mainWorkItem.cancel()
+    }
+
+    open func resume() {
+        guard self.hasEverActivatedOnce
+        else {
+            self.activate()
+            return
+        }
+        guard case .suspended = self.state
+        else {
+            switch self.state {
+            case .running:
+                fatalError("cannot resume \(self): this poste is already running.")
+            case .done:
+                fatalError("cannot resume \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot resume \(self): this poste is already cancelled.")
+            case .thrown:
+                fatalError("cannot resume \(self): this poste is already thrown.")
+            default:
+                fatalError()
+            }
+        }
+        self._state = .running
+        self.group.resume()
+    }
+
+    open func suspend() {
+        guard case .running = self.state
+        else {
+            switch self.state {
+            case .suspended:
+                fatalError("cannot suspend \(self): this poste is already suspended.")
+            case .done:
+                fatalError("cannot suspend \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot suspend \(self): this poste is already cancelled.")
+            case .thrown:
+                fatalError("cannot suspend \(self): this poste is already thrown.")
+            default:
+                fatalError()
+            }
+        }
+        self._state = .suspended
+        self.group.suspend()
+    }
+
+    public func done(_ closure: @escaping (T) -> Void) -> ThrowingNonnullPoste<T> {
+        self.doneClosures.append(closure)
         return self
     }
 
     public func cancelled(_ closure: @escaping () -> Void) -> ThrowingNonnullPoste<T> {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.cancelled else {
-                return
-            }
-            closure()
-        }
+        self.cancelledClosures.append(closure)
         return self
     }
 
     public func thrown(_ closure: @escaping (Error) -> Void) -> ThrowingNonnullPoste<T> {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.thrown else {
-                return
-            }
-            closure(self.error!)
-        }
+        self.thrownClosures.append(closure)
         return self
     }
 }
 
-public class ThrowingVoidPoste {
+open class ThrowingVoidPoste {
 
     internal let group = DispatchGroup()
     internal let qos: DispatchQoS
@@ -454,13 +944,19 @@ public class ThrowingVoidPoste {
     private var mainWorkItem: DispatchWorkItem!
     private var timeoutWorkItem: DispatchWorkItem!
 
-    private var done = false
-    private var cancelled = false
-    private var thrown = false
+    private var doneClosures = [() -> Void]()
+    private var cancelledClosures = [() -> Void]()
+    private var thrownClosures = [(Error) -> Void]()
 
-    internal private(set) var isFired = false
+    private var hasEverActivatedOnce = false
 
-    internal required init(closure: @escaping () throws -> Void, qos: DispatchQoS, timeout: DispatchTimeInterval) {
+    private var _state = PosteState.suspended
+
+    public var state: PosteState {
+        return self._state
+    }
+
+    public required init(closure: @escaping () throws -> Void, qos: DispatchQoS, activate: Bool, timeout: DispatchTimeInterval) {
         self.group.enter()
         self.qos = qos
         self.mainWorkItem = DispatchWorkItem(qos: self.qos) {
@@ -476,79 +972,176 @@ public class ThrowingVoidPoste {
                 switch self.mainWorkItem.wait(timeout: time) {
                 case .success:
                     if self.error == nil {
-                        self.done = true
+                        self._state = .done
                     }
                     else {
-                        self.thrown = true
+                        self._state = .thrown
                     }
                 case .timedOut:
                     self.mainWorkItem.cancel()
                     if self.error == nil {
-                        self.cancelled = true
+                        self._state = .cancelled
                     }
                     else {
-                        self.thrown = true
+                        self._state = .thrown
                     }
                 }
             }
             else {
                 self.mainWorkItem.wait()
                 if self.error == nil {
-                    self.done = true
+                    self._state = .done
                 }
                 else {
-                    self.thrown = true
+                    self._state = .thrown
                 }
             }
         }
         self.timeoutWorkItem.notify(qos: self.qos, queue: globalQueue) {
             self.group.leave()
         }
-        self.fire()
+        self.group.notify(qos: self.qos, queue: globalQueue) {
+            switch self.state {
+            case .done:
+                let closures = self.doneClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    globalQueue.sync {
+                        let closure = closure
+                        globalQueue.async(qos: self.qos) {
+                            closure()
+                        }
+                    }
+                }
+            case .cancelled:
+                let closures = self.cancelledClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    globalQueue.sync {
+                        let closure = closure
+                        globalQueue.async(qos: self.qos) {
+                            closure()
+                        }
+                    }
+                }
+            case .thrown:
+                let closures = self.thrownClosures
+                for i in 0 ..< closures.count {
+                    let closure = closures[i]
+                    let error = self.error!
+                    globalQueue.sync {
+                        let closure = closure
+                        let error = error
+                        globalQueue.async(qos: self.qos) {
+                            closure(error)
+                        }
+                    }
+                }
+            default:
+                fatalError()
+            }
+            self.mainWorkItem = nil
+            self.timeoutWorkItem = nil
+            self.doneClosures.removeAll()
+            self.cancelledClosures.removeAll()
+            self.thrownClosures.removeAll()
+        }
+        if activate {
+            self.activate()
+        }
     }
 
-    internal func fire() {
-        guard !self.isFired else {
-            return
+    private func activate() {
+        guard !self.hasEverActivatedOnce
+        else {
+            fatalError("Cannot activate \(self): this poste is already activated.")
         }
-        self.isFired = true
+        self.hasEverActivatedOnce = true
+        self._state = .running
         globalQueue.async(group: self.group, execute: self.mainWorkItem)
         globalQueue.async(group: self.group, execute: self.timeoutWorkItem)
     }
 
+    open func cancel() {
+        guard
+            case .suspended = self.state,
+            case .running = self.state
+        else {
+            switch self.state {
+            case .done:
+                fatalError("cannot cancel \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot cancel \(self): this poste is already cancelled.")
+            case .thrown:
+                fatalError("cannot cancel \(self): this poste is already thrown.")
+            default:
+                fatalError()
+            }
+        }
+        self._state = .cancelled
+        self.mainWorkItem.cancel()
+    }
+
+    open func resume() {
+        guard self.hasEverActivatedOnce
+        else {
+            self.activate()
+            return
+        }
+        guard case .suspended = self.state
+        else {
+            switch self.state {
+            case .running:
+                fatalError("cannot resume \(self): this poste is already running.")
+            case .done:
+                fatalError("cannot resume \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot resume \(self): this poste is already cancelled.")
+            case .thrown:
+                fatalError("cannot resume \(self): this poste is already thrown.")
+            default:
+                fatalError()
+            }
+        }
+        self._state = .running
+        self.group.resume()
+    }
+
+    open func suspend() {
+        guard case .running = self.state
+        else {
+            switch self.state {
+            case .suspended:
+                fatalError("cannot suspend \(self): this poste is already suspended.")
+            case .done:
+                fatalError("cannot suspend \(self): this poste is already done.")
+            case .cancelled:
+                fatalError("cannot suspend \(self): this poste is already cancelled.")
+            case .thrown:
+                fatalError("cannot suspend \(self): this poste is already thrown.")
+            default:
+                fatalError()
+            }
+        }
+        self._state = .suspended
+        self.group.suspend()
+    }
+
     @discardableResult
     public func done(_ closure: @escaping () -> Void) -> ThrowingVoidPoste {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.done else {
-                return
-            }
-            closure()
-        }
+        self.doneClosures.append(closure)
         return self
     }
 
     @discardableResult
     public func cancelled(_ closure: @escaping () -> Void) -> ThrowingVoidPoste {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.cancelled else {
-                return
-            }
-            closure()
-        }
+        self.cancelledClosures.append(closure)
         return self
     }
 
     @discardableResult
     public func thrown(_ closure: @escaping (Error) -> Void) -> ThrowingVoidPoste {
-        globalQueue.async(qos: self.qos) {
-            self.group.wait()
-            guard self.thrown else {
-                return
-            }
-            closure(self.error!)
-        }
+        self.thrownClosures.append(closure)
         return self
     }
 }
